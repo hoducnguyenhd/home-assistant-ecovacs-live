@@ -38,7 +38,7 @@ from .pin import encode_live_view_pin
 _LOGGER = logging.getLogger(__name__)
 
 APP_ID = "ecovacs"
-APP_VERSION = "3.14.0"
+APP_VERSION = "3.28.0"
 APP_CHANNEL = "google_play"
 VIDEO_API_VERSION = "2.1.0"
 SIGNING_PREFIX = "ecovacs2ea31cf06e6711eaa0aff7b9558a534e"
