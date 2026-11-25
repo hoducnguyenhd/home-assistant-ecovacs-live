@@ -1,12 +1,12 @@
 """Config flow for ECOVACS Live View."""
 from __future__ import annotations
 
+from dataclasses import asdict, is_dataclass
 import logging
 import uuid
 from typing import Any
 
 import voluptuous as vol
-
 from deebot_client.authentication import Authenticator, create_rest_config
 from deebot_client.exceptions import (
     AuthenticationError,
@@ -21,9 +21,9 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .client import async_get_global_device_list
-
 from .const import (
     CONF_ACCOUNT,
+    CONF_ACCOUNT_CREDENTIALS,
     CONF_AUTO_STOP_MINUTES,
     CONF_CLIENT_ID,
     CONF_COUNTRY,
@@ -35,6 +35,21 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _serialize_credentials(credentials: Any) -> dict[str, Any] | None:
+    """Serialize credentials object into a JSON-safe dictionary."""
+    if credentials is None:
+        return None
+    if is_dataclass(credentials) and not isinstance(credentials, type):
+        return asdict(credentials)
+    if isinstance(credentials, dict):
+        return dict(credentials)
+    data: dict[str, Any] = {}
+    for attr in ("user_id", "token", "resource", "refresh_token", "expires_at"):
+        if hasattr(credentials, attr):
+            data[attr] = getattr(credentials, attr)
+    return data or None
 
 
 class EcovacsLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -148,13 +163,7 @@ class EcovacsLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected verification failure")
                 errors["base"] = "verification_failed"
             else:
-                try:
-                    await self._authenticator.authenticate()
-                except Exception:
-                    _LOGGER.exception("Login retry after verification failed")
-                    errors["base"] = "auth_error"
-                else:
-                    return await self._finish_setup()
+                return await self._finish_setup()
 
         return self.async_show_form(
             step_id="verify",
@@ -185,12 +194,16 @@ class EcovacsLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.exception("ECOVACS raw device query failed")
             return self.async_abort(reason="device_query_failed")
 
+        entry_data = dict(self._pending_data)
+        serialized_creds = _serialize_credentials(credentials)
+        if serialized_creds:
+            entry_data[CONF_ACCOUNT_CREDENTIALS] = serialized_creds
+
         account = str(self._pending_data[CONF_ACCOUNT])
         return self.async_create_entry(
             title=f"ECOVACS Live View ({account})",
-            data=dict(self._pending_data),
+            data=entry_data,
         )
-
 
 
 class EcovacsLiveOptionsFlow(config_entries.OptionsFlow):
