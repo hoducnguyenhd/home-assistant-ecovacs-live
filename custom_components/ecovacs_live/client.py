@@ -7,8 +7,8 @@ import logging
 from typing import Any
 
 import aiohttp
-
 from deebot_client.authentication import Authenticator, create_rest_config
+from deebot_client.models import AccountCredentials
 from deebot_client.util import md5
 
 from homeassistant.core import HomeAssistant
@@ -24,18 +24,13 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 _APP_ID = "ecovacs"
-_APP_VERSION = "3.15.0"
+_APP_VERSION = "3.28.0"
 _APP_CHANNEL = "google_play"
 _REALM = "ecouser.net"
 
 
 def _jwt_resource(token: str) -> str:
-    """Extract the ECOVACS login resource from the JWT payload without verifying it.
-
-    The token itself has already been returned by the authenticated ECOVACS login.
-    ECOVACS HOME uses the JWT's ``r`` claim as auth.resource for
-    GetGlobalDeviceList.
-    """
+    """Extract the ECOVACS login resource from the JWT payload without verifying it."""
     try:
         parts = token.split(".")
         if len(parts) < 2:
@@ -50,6 +45,23 @@ def _jwt_resource(token: str) -> str:
     return ""
 
 
+def _parse_account_credentials(
+    raw_credentials: Any,
+) -> AccountCredentials | None:
+    """Convert stored dictionary credentials back into AccountCredentials."""
+    if isinstance(raw_credentials, AccountCredentials):
+        return raw_credentials
+    if isinstance(raw_credentials, dict) and raw_credentials:
+        try:
+            return AccountCredentials(**raw_credentials)
+        except Exception:
+            _LOGGER.debug(
+                "Could not deserialize stored ECOVACS account credentials",
+                exc_info=True,
+            )
+    return None
+
+
 async def async_get_global_device_list(
     session: aiohttp.ClientSession,
     *,
@@ -57,16 +69,7 @@ async def async_get_global_device_list(
     credentials: Any,
     login_client_id: str,
 ) -> list[dict[str, Any]]:
-    """Return the raw ECOVACS robot list using the app's proven API call.
-
-    This reproduces ECOVACS HOME 3.15.0:
-      POST /api/appsvr/app.do
-      todo = GetGlobalDeviceList
-
-    Unlike deebot-client's model parsing, this returns the server's raw device
-    dictionaries, so unsupported robots such as the T90 retain the real DID,
-    class and resource values.
-    """
+    """Return the raw ECOVACS robot list using ECOVACS HOME's API call."""
     user_id = str(credentials.user_id)
     token = str(credentials.token)
     auth_resource = (
@@ -163,12 +166,12 @@ async def async_get_global_device_list(
     return devices
 
 
-
 async def async_authenticate_and_discover(
     hass: HomeAssistant,
     entry_data: dict[str, Any],
     *,
     session: aiohttp.ClientSession | None = None,
+    account_credentials: Any = None,
 ) -> tuple[Authenticator, Any, Any, list[dict[str, Any]]]:
     """Authenticate and discover robots using ECOVACS HOME's raw device-list call."""
     if session is None:
@@ -180,10 +183,13 @@ async def async_authenticate_and_discover(
         device_id=login_client_id,
         alpha_2_country=str(entry_data[CONF_COUNTRY]),
     )
+    parsed_creds = _parse_account_credentials(account_credentials)
+
     authenticator = Authenticator(
         rest_config,
         str(entry_data[CONF_ACCOUNT]),
         md5(str(entry_data[CONF_PASSWORD])),
+        account_credentials=parsed_creds,
     )
 
     credentials = await authenticator.authenticate()
