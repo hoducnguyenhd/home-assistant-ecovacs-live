@@ -1,6 +1,7 @@
 """ECOVACS Live View integration."""
 from __future__ import annotations
 
+from dataclasses import asdict, is_dataclass
 import logging
 from typing import Any
 
@@ -12,6 +13,7 @@ from homeassistant.helpers import device_registry as dr
 
 from .client import async_authenticate_and_discover
 from .const import (
+    CONF_ACCOUNT_CREDENTIALS,
     CONF_AUTO_STOP_MINUTES,
     CONF_CLIENT_ID,
     CONF_COUNTRY,
@@ -48,6 +50,21 @@ def _serial(device: dict[str, Any]) -> str:
     return str(device.get("name", "")).strip()
 
 
+def _serialize_credentials(credentials: Any) -> dict[str, Any] | None:
+    """Serialize credentials object into a dictionary."""
+    if credentials is None:
+        return None
+    if is_dataclass(credentials) and not isinstance(credentials, type):
+        return asdict(credentials)
+    if isinstance(credentials, dict):
+        return dict(credentials)
+    data: dict[str, Any] = {}
+    for attr in ("user_id", "token", "resource", "refresh_token", "expires_at"):
+        if hasattr(credentials, attr):
+            data[attr] = getattr(credentials, attr)
+    return data or None
+
+
 def _migrate_or_remove_stale_device(
     registry: dr.DeviceRegistry,
     entry: ConfigEntry,
@@ -55,11 +72,7 @@ def _migrate_or_remove_stale_device(
     did: str,
     serial_number: str,
 ) -> None:
-    """Migrate/remove stale device-registry records for one physical robot.
-
-    The ECOVACS serial is used as the physical-device match.  We never dedupe
-    based on the friendly display name.
-    """
+    """Migrate/remove stale device-registry records for one physical robot."""
     if not serial_number:
         return
 
@@ -75,8 +88,6 @@ def _migrate_or_remove_stale_device(
         None,
     )
 
-    # If the integration previously registered this physical robot under an
-    # old identifier and there is only one candidate, migrate it in place.
     if target is None and len(matching) == 1:
         old = matching[0]
         new_identifiers = {
@@ -104,8 +115,6 @@ def _migrate_or_remove_stale_device(
     if target is None:
         return
 
-    # A current-DID target already exists. Remove other records for the same
-    # serial after copying useful user-owned metadata where practical.
     for stale in matching:
         if stale.id == target.id:
             continue
@@ -145,10 +154,6 @@ async def _async_update_listener(
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up ECOVACS Live View from a config entry."""
-    # Match the now-proven fresh Windows control exactly:
-    # one dedicated aiohttp session, deebot-client 18.4.0 Authenticator,
-    # and the exact credentials returned by that Authenticator passed directly
-    # into start_watch. Do not perform a second custom/classic login.
     live_view_session = aiohttp.ClientSession()
     try:
         authenticator, credentials, rest_config, devices = (
@@ -156,11 +161,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 hass,
                 dict(entry.data),
                 session=live_view_session,
+                account_credentials=entry.data.get(CONF_ACCOUNT_CREDENTIALS),
             )
         )
     except Exception:
         await live_view_session.close()
         raise
+
+    serialized_creds = _serialize_credentials(credentials)
+    if (
+        serialized_creds
+        and serialized_creds != entry.data.get(CONF_ACCOUNT_CREDENTIALS)
+    ):
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, CONF_ACCOUNT_CREDENTIALS: serialized_creds},
+        )
 
     registry = dr.async_get(hass)
     registered: list[dict[str, Any]] = []
