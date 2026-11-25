@@ -1,17 +1,12 @@
 {
   "domain": "ecovacs_live",
   "name": "ECOVACS Live View",
-  "version": "0.8.4",
+  "codeowners": ["@imcdo17-cyber"],
   "config_flow": true,
-  "integration_type": "device",
-  "requirements": [
-    "deebot-client>=18.5.1,<21",
-    "aiortc>=1.15.0",
-    "websockets==15.0.1"
-  ],
-  "codeowners": [
-    "@imcdo17-cyber"
-  ],
-  "documentation": "https://github.com/imcdo17-cyber/home-assistant-ecovacs-live",
-  "issue_tracker": "https://github.com/imcdo17-cyber/home-assistant-ecovacs-live/issues"
+  "dependencies": [],
+  "documentation": "https://github.com/hoducnguyenhd/home-assistant-ecovacs-live",
+  "integration_type": "hub",
+  "iot_class": "cloud_push",
+  "requirements": ["aiortc>=1.15.0"],
+  "version": "0.8.3-patched"
 }
