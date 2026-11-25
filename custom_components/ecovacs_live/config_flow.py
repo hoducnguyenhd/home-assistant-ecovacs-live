@@ -14,6 +14,7 @@ from deebot_client.exceptions import (
     InvalidAuthenticationError,
     InvalidVerificationCodeError,
 )
+from deebot_client.models import AccountCredentials
 from deebot_client.util import md5
 
 from homeassistant import config_entries
@@ -37,19 +38,26 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-def _serialize_credentials(credentials: Any) -> dict[str, Any] | None:
-    """Serialize credentials object into a JSON-safe dictionary."""
-    if credentials is None:
+def _serialize_account_credentials(creds: Any) -> dict[str, Any] | None:
+    """Serialize AccountCredentials into a JSON-safe dict."""
+    if creds is None:
         return None
-    if is_dataclass(credentials) and not isinstance(credentials, type):
-        return asdict(credentials)
-    if isinstance(credentials, dict):
-        return dict(credentials)
-    data: dict[str, Any] = {}
-    for attr in ("user_id", "token", "resource", "refresh_token", "expires_at"):
-        if hasattr(credentials, attr):
-            data[attr] = getattr(credentials, attr)
-    return data or None
+    if isinstance(creds, AccountCredentials):
+        return {"access_token": creds.access_token, "user_id": creds.user_id}
+    if is_dataclass(creds) and not isinstance(creds, type):
+        data = asdict(creds)
+        if "access_token" in data and "user_id" in data:
+            return {"access_token": data["access_token"], "user_id": data["user_id"]}
+        return data or None
+    if isinstance(creds, dict):
+        if "access_token" in creds and "user_id" in creds:
+            return {"access_token": creds["access_token"], "user_id": creds["user_id"]}
+        return dict(creds) or None
+    access_token = getattr(creds, "access_token", None)
+    user_id = getattr(creds, "user_id", None)
+    if access_token and user_id:
+        return {"access_token": str(access_token), "user_id": str(user_id)}
+    return None
 
 
 class EcovacsLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -67,6 +75,42 @@ class EcovacsLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._pending_data: dict[str, Any] = {}
         self._authenticator: Authenticator | None = None
         self._rest_config: Any | None = None
+        self._captured_account_credentials: dict[str, Any] | None = None
+
+    async def _on_account_creds_updated(
+        self,
+        account_creds: AccountCredentials,
+    ) -> None:
+        serialized = _serialize_account_credentials(account_creds)
+        if serialized:
+            self._captured_account_credentials = serialized
+
+    def _build_authenticator(
+        self,
+        *,
+        account: str,
+        password: str,
+        country: str,
+        client_id: str,
+    ) -> Authenticator:
+        self._captured_account_credentials = None
+        session = async_get_clientsession(self.hass)
+        rest_config = create_rest_config(
+            session,
+            device_id=client_id,
+            alpha_2_country=country,
+        )
+        self._rest_config = rest_config
+        authenticator = Authenticator(
+            rest_config,
+            account,
+            md5(password),
+        )
+        authenticator._on_account_credentials_changed.add(
+            self._on_account_creds_updated
+        )
+        self._authenticator = authenticator
+        return authenticator
 
     async def async_step_user(
         self,
@@ -97,23 +141,17 @@ class EcovacsLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(f"{country}:{account.lower()}")
                 self._abort_if_unique_id_configured()
 
-                session = async_get_clientsession(self.hass)
-                rest_config = create_rest_config(
-                    session,
-                    device_id=client_id,
-                    alpha_2_country=country,
-                )
-                self._rest_config = rest_config
-                self._authenticator = Authenticator(
-                    rest_config,
-                    account,
-                    md5(password),
+                authenticator = self._build_authenticator(
+                    account=account,
+                    password=password,
+                    country=country,
+                    client_id=client_id,
                 )
                 try:
-                    await self._authenticator.authenticate()
+                    await authenticator.authenticate()
                 except DeviceVerificationRequiredError:
                     try:
-                        await self._authenticator.request_device_verification_code()
+                        await authenticator.request_device_verification_code()
                     except Exception:
                         _LOGGER.exception("Failed to request verification code")
                         errors["base"] = "verification_request_failed"
@@ -179,6 +217,8 @@ class EcovacsLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="auth_session_lost")
 
         try:
+            # Nếu verify_device đã trả về credentials bên trong authenticator,
+            # gọi authenticate() sẽ dùng hoặc làm mới phiên hiện tại.
             credentials = await self._authenticator.authenticate()
             rest_config = self._rest_config
             session = async_get_clientsession(self.hass)
@@ -195,7 +235,13 @@ class EcovacsLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="device_query_failed")
 
         entry_data = dict(self._pending_data)
-        serialized_creds = _serialize_credentials(credentials)
+        serialized_creds = (
+            self._captured_account_credentials
+            or _serialize_account_credentials(
+                getattr(self._authenticator, "_account_credentials", None)
+            )
+            or _serialize_account_credentials(credentials)
+        )
         if serialized_creds:
             entry_data[CONF_ACCOUNT_CREDENTIALS] = serialized_creds
 
